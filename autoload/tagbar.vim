@@ -2352,6 +2352,133 @@ function! s:IsLineVisible(line) abort
     return alreadyvisible
 endfunction
 
+" s:JumpToLocalTag() {{{2
+function! s:JumpToLocalTag(stay_in_tagbar, ...) abort
+    let taginfo = a:0 > 0 ? a:1 : s:GetTagInfo(line('.'), 1)
+    let force_lazy_scroll = a:0 > 1 ? a:2 : 0
+
+    if empty(taginfo) || !taginfo.isNormalTag()
+        " Cursor line not on a tag. Check if this is the start of a foldable
+        " line and if so, initiate the CloseFold() / OpenFold(). First trim
+        " any whitespace from the start of the line so we don't have to worry
+        " about multiple nested folds that are indented
+        "
+        " NOTE: This will only work with folds that are not also tags. For
+        " example in a class definition that acts as the start of a fold when
+        " there are member functions in the class, that line is also a valid
+        " tag, so hitting <CR> on that line will cause it to jump to the tag,
+        " not fold/unfold that particular fold
+        let line   = substitute(getline('.'), '^\s*\(.\{-}\)\s*$', '\1', '')
+
+        if (match(line, g:tagbar#icon_open . '[-+ ]')) == 0
+            call s:CloseFold()
+        elseif (match(line, g:tagbar#icon_closed . '[-+ ]')) == 0
+            call s:OpenFold()
+        endif
+        return
+    endif
+
+    let tagbarwinnr = winnr()
+    if exists('w:autoclose')
+        let autoclose = w:autoclose
+    else
+        let autoclose = 0
+    endif
+
+    " Mark current position so it can be jumped back to
+    mark '
+
+    " Check if the tag is already visible in the window.  We must do this
+    " before jumping to the line.
+    let noscroll = 0
+    if g:tagbar_jump_lazy_scroll != 0 || force_lazy_scroll
+        let noscroll = s:IsLineVisible(taginfo.fields.line)
+    endif
+
+    " Jump to the line where the tag is defined. Don't use the search pattern
+    " since it doesn't take the scope into account and thus can fail if tags
+    " with the same name are defined in different scopes (e.g. classes)
+    call tagbar#debug#log('Jumping to line ' . taginfo.fields.line)
+    execute taginfo.fields.line
+
+    " If the file has been changed but not saved, the tag may not be on the
+    " saved line anymore, so search for it in the vicinity of the saved line
+    if taginfo.pattern !=# ''
+        call tagbar#debug#log('Searching for pattern "' . taginfo.pattern . '"')
+        if match(getline('.'), taginfo.pattern) == -1
+            let interval = 1
+            let forward  = 1
+            while search(taginfo.pattern, 'W' . forward ? '' : 'b') == 0
+                if !forward
+                    if interval > line('$')
+                        break
+                    else
+                        let interval = interval * 2
+                    endif
+                endif
+                let forward = !forward
+            endwhile
+        endif
+    endif
+
+    " If the tag is on a different line after unsaved changes update the tag
+    " and file infos/objects
+    let curline = line('.')
+    if taginfo.fields.line != curline
+        let taginfo.fields.line = curline
+        let taginfo.fileinfo.fline[curline] = taginfo
+    endif
+
+    if noscroll
+        " Do not scroll.
+    else
+        " Center the tag in the window and jump to the correct column if
+        " available, otherwise try to find it in the line
+        normal! z.
+
+        " If configured, adjust the jump_offset and center the window on that
+        " line. Then fall-through adjust the cursor() position below that
+        if g:tagbar_jump_offset != 0 && g:tagbar_jump_offset < curline
+            if g:tagbar_jump_offset > winheight(0) / 2
+                let jump_offset = winheight(0) / 2
+            elseif g:tagbar_jump_offset < -winheight(0) / 2
+                let jump_offset = -winheight(0) / 2
+            else
+                let jump_offset = g:tagbar_jump_offset
+            endif
+            execute curline+jump_offset
+            normal! z.
+        endif
+    endif
+
+    if taginfo.fields.column > 0
+        call cursor(taginfo.fields.line, taginfo.fields.column)
+    else
+        call cursor(taginfo.fields.line, 1)
+        call search('\V' . taginfo.name, 'c', line('.'))
+    endif
+
+    normal! zv
+
+    if a:stay_in_tagbar
+        call s:HighlightTag(0, 1)
+        call s:goto_win(tagbarwinnr)
+        redraw
+    elseif g:tagbar_autoclose || autoclose
+        " Also closes preview window
+        call s:CloseWindow()
+    else
+        " Close the preview window if it was opened by us
+        if s:pwin_by_tagbar
+            pclose
+        endif
+        if s:is_maximized
+            call s:ZoomWindow()
+        endif
+        call s:HighlightTag(0)
+    endif
+endfunction
+
 " s:JumpToTag() {{{2
 function! s:JumpToTag(stay_in_tagbar, ...) abort
     let taginfo = a:0 > 0 ? a:1 : s:GetTagInfo(line('.'), 1)
@@ -3258,7 +3385,7 @@ function! s:JumpToNearbyTag(direction, request, flags) abort
         return
     endif
 
-    call s:JumpToTag(1, tag, lazy_scroll)
+    call s:JumpToLocalTag(1, tag, lazy_scroll)
 endfunction
 
 " s:GetTagInfo() {{{2
